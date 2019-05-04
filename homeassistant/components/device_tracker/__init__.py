@@ -44,6 +44,10 @@ YAML_DEVICES = 'known_devices.yaml'
 
 CONF_TRACK_NEW = 'track_new_devices'
 DEFAULT_TRACK_NEW = True
+
+CONF_ADD_NEW = 'add_new_devices'
+DEFAULT_ADD_NEW = True
+
 CONF_NEW_DEVICE_DEFAULTS = 'new_device_defaults'
 
 CONF_CONSIDER_HOME = 'consider_home'
@@ -78,6 +82,7 @@ SOURCE_TYPES = (SOURCE_TYPE_GPS, SOURCE_TYPE_ROUTER,
 
 NEW_DEVICE_DEFAULTS_SCHEMA = vol.Any(None, vol.Schema({
     vol.Optional(CONF_TRACK_NEW, default=DEFAULT_TRACK_NEW): cv.boolean,
+    vol.Optional(CONF_ADD_NEW, default=DEFAULT_ADD_NEW): cv.boolean,
     vol.Optional(CONF_AWAY_HIDE, default=DEFAULT_AWAY_HIDE): cv.boolean,
 }))
 PLATFORM_SCHEMA = cv.PLATFORM_SCHEMA.extend({
@@ -247,6 +252,7 @@ class DeviceTracker:
         self.consider_home = consider_home
         self.track_new = track_new if track_new is not None \
             else defaults.get(CONF_TRACK_NEW, DEFAULT_TRACK_NEW)
+        self.add_new = defaults.get(CONF_ADD_NEW, DEFAULT_ADD_NEW)
         self.defaults = defaults
         self.group = None
         self._is_updating = asyncio.Lock(loop=hass.loop)
@@ -301,45 +307,48 @@ class DeviceTracker:
                 await device.async_update_ha_state()
             return
 
-        # If no device can be found, create it
-        dev_id = util.ensure_unique_string(dev_id, self.devices.keys())
-        device = Device(
-            self.hass, consider_home or self.consider_home, self.track_new,
-            dev_id, mac, (host_name or dev_id).replace('_', ' '),
-            picture=picture, icon=icon,
-            hide_if_away=self.defaults.get(CONF_AWAY_HIDE, DEFAULT_AWAY_HIDE))
-        self.devices[dev_id] = device
-        if mac is not None:
-            self.mac_to_dev[mac] = device
+        # If no device can be found, create it--if add_new is True (default)
+        # Otherwise, if False, do not add it to known_devices.yaml for better
+        # manual management.
+        if self.add_new:
+            dev_id = util.ensure_unique_string(dev_id, self.devices.keys())
+            device = Device(
+                self.hass, consider_home or self.consider_home, self.track_new,
+                dev_id, mac, (host_name or dev_id).replace('_', ' '),
+                picture=picture, icon=icon,
+                hide_if_away=self.defaults.get(CONF_AWAY_HIDE, DEFAULT_AWAY_HIDE))
+            self.devices[dev_id] = device
+            if mac is not None:
+                self.mac_to_dev[mac] = device
 
-        await device.async_seen(
-            host_name, location_name, gps, gps_accuracy, battery, attributes,
-            source_type)
+            await device.async_seen(
+                host_name, location_name, gps, gps_accuracy, battery, attributes,
+                source_type)
 
-        if device.track:
-            await device.async_update_ha_state()
+            if device.track:
+                await device.async_update_ha_state()
 
-        # During init, we ignore the group
-        if self.group and self.track_new:
+            # During init, we ignore the group
+            if self.group and self.track_new:
+                self.hass.async_create_task(
+                    self.hass.async_call(
+                        DOMAIN_GROUP, SERVICE_SET, {
+                            ATTR_OBJECT_ID: util.slugify(GROUP_NAME_ALL_DEVICES),
+                            ATTR_VISIBLE: False,
+                            ATTR_NAME: GROUP_NAME_ALL_DEVICES,
+                            ATTR_ADD_ENTITIES: [device.entity_id]}))
+
+            self.hass.bus.async_fire(EVENT_NEW_DEVICE, {
+                ATTR_ENTITY_ID: device.entity_id,
+                ATTR_HOST_NAME: device.host_name,
+                ATTR_MAC: device.mac,
+            })
+
+            # update known_devices.yaml
             self.hass.async_create_task(
-                self.hass.async_call(
-                    DOMAIN_GROUP, SERVICE_SET, {
-                        ATTR_OBJECT_ID: util.slugify(GROUP_NAME_ALL_DEVICES),
-                        ATTR_VISIBLE: False,
-                        ATTR_NAME: GROUP_NAME_ALL_DEVICES,
-                        ATTR_ADD_ENTITIES: [device.entity_id]}))
-
-        self.hass.bus.async_fire(EVENT_NEW_DEVICE, {
-            ATTR_ENTITY_ID: device.entity_id,
-            ATTR_HOST_NAME: device.host_name,
-            ATTR_MAC: device.mac,
-        })
-
-        # update known_devices.yaml
-        self.hass.async_create_task(
-            self.async_update_config(
-                self.hass.config.path(YAML_DEVICES), dev_id, device)
-        )
+                self.async_update_config(
+                    self.hass.config.path(YAML_DEVICES), dev_id, device)
+            )
 
     async def async_update_config(self, path, dev_id, device):
         """Add device to YAML configuration file.

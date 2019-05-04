@@ -350,6 +350,31 @@ async def test_new_device_event_fired(hass):
 
 
 # pylint: disable=invalid-name
+async def test_new_device_skipped_if_add_new_devices_false(hass,
+                                                           yaml_devices):
+    """Test skipping new device if add new devices is set to false"""
+    device_tracker_config = {
+        device_tracker.DOMAIN: {
+            CONF_PLATFORM: 'test',
+            'new_device_defaults': {
+                'add_new_devices': False
+            }
+        }
+    }
+    with assert_setup_component(1, device_tracker.DOMAIN):
+        assert await async_setup_component(hass, device_tracker.DOMAIN,
+                                           device_tracker_config)
+
+    common.async_see(hass, 'mac_1', host_name='hello')
+
+    await hass.async_block_till_done()
+
+    config = await device_tracker.async_load_config(yaml_devices, hass,
+                                                    timedelta(seconds=0))
+    assert len(config) == 0
+
+
+# pylint: disable=invalid-name
 async def test_not_write_duplicate_yaml_keys(hass, yaml_devices):
     """Test that the device tracker will not generate invalid YAML."""
     with assert_setup_component(1, device_tracker.DOMAIN):
